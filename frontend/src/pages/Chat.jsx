@@ -289,7 +289,7 @@ export default function Chat({ currentUser, currentUserAvatar, activeRoom, activ
           <button onClick={() => { setReplyTo(null); setEditMsg(null); setInputValue(''); }} style={{ background: 'transparent', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', fontSize: '16px' }}>✕</button>
         </div>
       )}
-         
+      <div style={{ display: 'flex', alignItems: 'center', gap: '12px', background: 'var(--bg-input)', padding: '8px 16px', borderRadius: '12px', border: '1px solid var(--border)', position: 'relative' }}>  
           {isRecording ? (
             <div style={{ flex: 1, display: 'flex', alignItems: 'center', gap: '12px', color: 'var(--danger)', fontWeight: 500, fontSize: '14px' }}>
                <div style={{ width: 10, height: 10, borderRadius: '50%', background: 'var(--danger)', animation: 'pulse 1s infinite' }} />
@@ -318,8 +318,8 @@ export default function Chat({ currentUser, currentUserAvatar, activeRoom, activ
             ) : (
               <svg onClick={startRecording} style={{ cursor: 'pointer', transition: 'color 0.2s', color: 'var(--text-muted)' }} width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>
             )}
-          </div>
-        
+          </div> 
+         </div> 
       {fullscreenMedia && (
         <div style={{ position: 'fixed', top: 0, left: 0, width: '100vw', height: '100vh', background: 'rgba(0,0,0,0.9)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 120000, backdropFilter: 'blur(10px)' }} onClick={() => setFullscreenMedia(null)}>
           <div style={{ position: 'absolute', top: 20, right: 30, color: 'white', fontSize: 30, cursor: 'pointer' }}>✕</div>
