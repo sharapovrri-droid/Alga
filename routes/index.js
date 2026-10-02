@@ -5,6 +5,7 @@ const path = require('path');
 const fs = require('fs');
 
 const apiController = require('../controllers/apiController');
+const authController = require('../controllers/authController');
 
 // Создаем папку uploads в корне проекта, если её ещё нет
 const uploadDir = path.join(__dirname, '..', 'uploads');
@@ -30,8 +31,13 @@ const upload = multer({
   limits: { fileSize: 25 * 1024 * 1024 }
 });
 
-// Роуты
+// Роуты API
 router.get('/', apiController.getStatus);
 router.post('/upload', upload.single('file'), apiController.uploadFile);
+
+// Роуты авторизации
+router.post('/register', authController.register);
+router.post('/login', authController.login);
+router.get('/me', authController.verifyToken);
 
 module.exports = router;

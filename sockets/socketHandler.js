@@ -1,4 +1,6 @@
 const db = require('../config/db');
+const fs = require('fs');
+const path = require('path');
 
 // Глобальные переменные состояния сервера
 let stories = []; 
@@ -145,15 +147,33 @@ module.exports = (io) => {
       const user = socket.username || onlineUsers[socket.id]?.name; 
       if (!user) return;
 
-      if (ADMIN_USERS.includes(user)) {
-        db.run(`DELETE FROM messages WHERE id = ?`, [messageId], function(err) { 
-          if (!err && this.changes > 0) io.emit('message deleted', messageId); 
+      // Сначала находим сообщение, чтобы проверить наличие файла
+      db.get(`SELECT * FROM messages WHERE id = ?`, [messageId], (err, msg) => {
+        if (err || !msg) return;
+
+        // Проверяем права: автор или админ
+        const canDelete = ADMIN_USERS.includes(user) || msg.user === user;
+        if (!canDelete) return;
+
+        // Удаляем из базы
+        db.run(`DELETE FROM messages WHERE id = ?`, [messageId], function(delErr) {
+          if (!delErr && this.changes > 0) {
+            io.emit('message deleted', messageId);
+
+            // Если к сообщению был прикреплен файл из папки uploads — удаляем физический файл с диска
+            if (msg.fileData && msg.fileData.startsWith('/uploads/')) {
+              const filePath = path.join(__dirname, '..', msg.fileData);
+              fs.unlink(filePath, (unlinkErr) => {
+                if (unlinkErr) {
+                  console.error('Не удалось удалить файл с диска:', unlinkErr.message);
+                } else {
+                  console.log(`🗑️ Файл удален с диска: ${msg.fileData}`);
+                }
+              });
+            }
+          }
         });
-      } else {
-        db.run(`DELETE FROM messages WHERE id = ? AND user = ?`, [messageId, user], function(err) { 
-          if (!err && this.changes > 0) io.emit('message deleted', messageId); 
-        });
-      }
+      });
     });
 
     // Редактирование сообщений

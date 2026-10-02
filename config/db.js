@@ -38,6 +38,15 @@ db.serialize(() => {
     type TEXT NOT NULL,
     owner TEXT NOT NULL
   )`);
+
+  // Таблица пользователей для JWT-авторизации
+  db.run(`CREATE TABLE IF NOT EXISTS users (
+    id TEXT PRIMARY KEY,
+    username TEXT UNIQUE NOT NULL,
+    password TEXT NOT NULL,
+    avatar TEXT,
+    createdAt INTEGER NOT NULL
+  )`);
 });
 
 module.exports = db;
