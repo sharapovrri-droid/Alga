@@ -2,13 +2,18 @@ const db = require('../config/db');
 
 // Глобальные переменные состояния сервера
 let stories = []; 
-let onlineUsers = {}; 
+let onlineUsers = {}; // socket.id -> { name, avatar }
 let voiceRooms = {}; 
 const ADMIN_USERS = ['Dep3kuu']; 
 const bannedUsers = new Set(); 
 
 module.exports = (io) => {
-  // Утилита для удаления пользователя из голосовых комнат при отключении
+  // Получение уникального списка имен пользователей онлайн
+  const getOnlineUsernames = () => {
+    return Array.from(new Set(Object.values(onlineUsers).map(u => u.name)));
+  };
+
+  // Удаление пользователя из голосовых комнат
   const removeUserFromVoice = (socketId) => {
     for (let room in voiceRooms) {
       const initialLen = voiceRooms[room].length;
@@ -20,29 +25,32 @@ module.exports = (io) => {
     }
   };
 
-  const getOnlineUsernames = () => Array.from(new Set(Object.values(onlineUsers).map(u => u.name)));
-
   io.on('connection', (socket) => {
     console.log(`🔌 Пользователь подключился: ${socket.id}`);
 
-    // Синхронизация начального состояния при подключении
+    // 1. Сразу передаем подключившемуся актуальное состояние сервера
+    socket.emit('online users', getOnlineUsernames());
     socket.emit('update stories', stories);
     for (let room in voiceRooms) {
       socket.emit('voice room users', { room, users: voiceRooms[room] });
     }
     
     db.all(`SELECT * FROM chats`, [], (err, rows) => { 
-      if (!err) socket.emit('load custom chats', rows); 
+      if (!err && rows) socket.emit('load custom chats', rows); 
     });
 
-    // Управление пользователями и профилем
+    // 2. Вход пользователя в систему
     socket.on('user joined', (data) => {
       if (!data || !data.name) return;
-      onlineUsers[socket.id] = data;
+      socket.username = data.name;
+      onlineUsers[socket.id] = { name: data.name, avatar: data.avatar || null };
       socket.join(data.name);
+      
+      // Оповещаем всех об обновленном списке
       io.emit('online users', getOnlineUsernames());
     });
 
+    // Обновление аватарки
     socket.on('update avatar', (avatar) => { 
       if (onlineUsers[socket.id]) { 
         onlineUsers[socket.id].avatar = avatar; 
@@ -50,7 +58,7 @@ module.exports = (io) => {
       } 
     });
 
-    // Обработка отключения
+    // 3. Отключение пользователя
     socket.on('disconnect', () => {
       console.log(`🔌 Пользователь отключился: ${socket.id}`);
       if (onlineUsers[socket.id]) { 
@@ -60,15 +68,16 @@ module.exports = (io) => {
       removeUserFromVoice(socket.id);
     });
 
-    // Управление чатами и комнатами
+    // Создание чатов
     socket.on('create chat', (data) => {
       if (!data || !data.name) return;
+      const creator = socket.username || data.owner || 'System';
       const chatId = 'chat_' + Date.now();
       db.run(`INSERT INTO chats (id, name, type, owner) VALUES (?, ?, ?, ?)`, 
-        [chatId, data.name, data.type || 'channel', data.owner || 'System'], 
+        [chatId, data.name, data.type || 'channel', creator], 
         (err) => {
           if (!err) {
-            io.emit('chat created', { id: chatId, name: data.name, type: data.type, owner: data.owner });
+            io.emit('chat created', { id: chatId, name: data.name, type: data.type, owner: creator });
           }
         }
       );
@@ -77,11 +86,11 @@ module.exports = (io) => {
     // История сообщений
     socket.on('get history', (room) => { 
       db.all(`SELECT * FROM messages WHERE room = ? ORDER BY timestamp ASC`, [room], (err, rows) => { 
-        if (!err) socket.emit('load history', rows); 
+        if (!err && rows) socket.emit('load history', rows); 
       }); 
     });
 
-    // Закрепление / Открепление сообщений
+    // Закрепление сообщений
     socket.on('pin message', (messageId) => { 
       db.run(`UPDATE messages SET isPinned = 1 WHERE id = ?`, [messageId], function(err) { 
         if (!err && this.changes > 0) io.emit('message pinned', messageId); 
@@ -97,9 +106,10 @@ module.exports = (io) => {
     // Индикатор набора текста
     socket.on('typing', (data) => socket.broadcast.emit('typing', data));
 
-    // Отправка сообщений (текст, файлы, голосовые)
+    // Отправка сообщений
     socket.on('chat message', (data) => {
-      if (!data || bannedUsers.has(data.user)) return; 
+      const sender = socket.username || data.user;
+      if (!data || !sender || bannedUsers.has(sender)) return; 
       
       const messageId = data.id || 'msg_' + Date.now() + Math.random().toString(36).substr(2, 9);
       const timestamp = data.timestamp || Date.now();
@@ -107,17 +117,17 @@ module.exports = (io) => {
       const msgObj = { 
         id: messageId, 
         room: data.room, 
-        user: data.user, 
-        userAvatar: data.userAvatar, 
-        text: data.text, 
-        fileName: data.fileName, 
-        fileData: data.fileData, 
-        replyToId: data.replyToId,
-        replyToUser: data.replyToUser, 
-        replyToText: data.replyToText, 
+        user: sender, 
+        userAvatar: data.userAvatar || onlineUsers[socket.id]?.avatar, 
+        text: data.text || '', 
+        fileName: data.fileName || null, 
+        fileData: data.fileData || null, 
+        replyToId: data.replyToId || null, 
+        replyToUser: data.replyToUser || null, 
+        replyToText: data.replyToText || null, 
         likes: 0, 
         timestamp, 
-        duration: data.duration, 
+        duration: data.duration || null, 
         isPinned: 0 
       };
 
@@ -132,7 +142,9 @@ module.exports = (io) => {
 
     // Удаление сообщений
     socket.on('delete message', (messageId) => {
-      const user = onlineUsers[socket.id]?.name; 
+      const user = socket.username || onlineUsers[socket.id]?.name; 
+      if (!user) return;
+
       if (ADMIN_USERS.includes(user)) {
         db.run(`DELETE FROM messages WHERE id = ?`, [messageId], function(err) { 
           if (!err && this.changes > 0) io.emit('message deleted', messageId); 
@@ -146,7 +158,9 @@ module.exports = (io) => {
 
     // Редактирование сообщений
     socket.on('edit message', (data) => {
-      const user = onlineUsers[socket.id]?.name; 
+      const user = socket.username || onlineUsers[socket.id]?.name; 
+      if (!user || !data || !data.id) return;
+
       db.run(`UPDATE messages SET text = ? WHERE id = ? AND user = ?`, [data.newText, data.id, user], function(err) { 
         if (!err && this.changes > 0) io.emit('message edited', { id: data.id, text: data.newText }); 
       });
@@ -160,7 +174,8 @@ module.exports = (io) => {
     });
 
     socket.on('new story', (data) => { 
-      stories.push({ id: 'story_' + Date.now(), user: data.user, image: data.image }); 
+      const sender = socket.username || data.user;
+      stories.push({ id: 'story_' + Date.now(), user: sender, image: data.image }); 
       if (stories.length > 10) stories.shift(); 
       io.emit('update stories', stories); 
     });
@@ -188,7 +203,7 @@ module.exports = (io) => {
       if (!voiceRooms[room]) voiceRooms[room] = [];
       voiceRooms[room].push({ 
         id: socket.id, 
-        user: onlineUsers[socket.id]?.name || 'Guest', 
+        user: socket.username || onlineUsers[socket.id]?.name || 'Guest', 
         micMuted: true, 
         headphonesMuted: false, 
         isSpeaking: false 

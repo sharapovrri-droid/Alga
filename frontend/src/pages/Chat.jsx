@@ -1,7 +1,15 @@
 import { useState, useEffect, useRef } from 'react';
 import { socket } from '../socket';
 
+const API_URL = 'http://localhost:3000';
 const EMOJIS = ['😀', '😂', '😍', '😎', '😢', '😡', '👍', '🔥', '❤', '🎉', '✨', '👀'];
+
+// Вспомогательная функция для получения полной ссылки на файл
+const getFileUrl = (url) => {
+  if (!url) return '';
+  if (url.startsWith('http') || url.startsWith('data:')) return url;
+  return `${API_URL}${url}`;
+};
 
 const CustomAudioPlayer = ({ src, initialDuration, isSelf, timeStr }) => {
   const audioRef = useRef(null);
@@ -114,6 +122,7 @@ export default function Chat({ currentUser, currentUserAvatar, activeRoom, activ
     setInputValue('');
   };
 
+  // Запись голоса и загрузка аудиофайла на сервер
   const startRecording = async () => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -122,14 +131,24 @@ export default function Chat({ currentUser, currentUserAvatar, activeRoom, activ
       audioChunksRef.current = [];
 
       mediaRecorder.ondataavailable = (e) => { if (e.data.size > 0) audioChunksRef.current.push(e.data); };
-      mediaRecorder.onstop = () => {
+      mediaRecorder.onstop = async () => {
         const mimeType = mediaRecorder.mimeType || 'audio/webm';
         const audioBlob = new Blob(audioChunksRef.current, { type: mimeType });
-        const reader = new FileReader();
         const finalDuration = recordTime; 
-        reader.onloadend = () => sendMessage(reader.result, 'Голосовое_сообщение.webm', finalDuration);
-        reader.readAsDataURL(audioBlob);
         stream.getTracks().forEach(track => track.stop());
+
+        // Загрузка аудиофайла на сервер через /api/upload
+        const formData = new FormData();
+        formData.append('file', audioBlob, 'voice.webm');
+        try {
+          const res = await fetch(`${API_URL}/api/upload`, { method: 'POST', body: formData });
+          const data = await res.json();
+          if (data.url) {
+            sendMessage(data.url, 'Голосовое_сообщение.webm', finalDuration);
+          }
+        } catch (err) {
+          console.error('Ошибка отправки голосового:', err);
+        }
       };
 
       mediaRecorder.start();
@@ -142,9 +161,30 @@ export default function Chat({ currentUser, currentUserAvatar, activeRoom, activ
   const stopRecording = () => { if (mediaRecorderRef.current && isRecording) { mediaRecorderRef.current.stop(); setIsRecording(false); clearInterval(recordTimerRef.current); } };
   const executeDelete = () => { if (deleteModal.user === currentUser && deleteForAll) socket.emit('delete message', deleteModal.id); else setDeletedLocal(prev => new Set(prev).add(deleteModal.id)); setDeleteModal(null); };
 
-  const handleFileUpload = (e) => {
+  // Загрузка фото/файлов на сервер через /api/upload
+  const handleFileUpload = async (e) => {
     const file = e.target.files[0];
-    if (file) { const reader = new FileReader(); reader.onload = (event) => sendMessage(event.target.result, file.name); reader.readAsDataURL(file); }
+    if (!file) return;
+
+    const formData = new FormData();
+    formData.append('file', file);
+
+    try {
+      const res = await fetch(`${API_URL}/api/upload`, {
+        method: 'POST',
+        body: formData
+      });
+      const data = await res.json();
+      if (data.url) {
+        sendMessage(data.url, file.name);
+      } else {
+        alert('Не удалось загрузить файл');
+      }
+    } catch (err) {
+      console.error('Ошибка загрузки файла:', err);
+      alert('Ошибка при соединении с сервером');
+    }
+
     setFileKey(Date.now());
   };
 
@@ -212,8 +252,9 @@ export default function Chat({ currentUser, currentUserAvatar, activeRoom, activ
           const showDate = msgDate !== lastDateStr;
           lastDateStr = msgDate;
 
-          const isAudio = msg.fileData?.startsWith('data:audio');
-          const isImage = msg.fileData?.startsWith('data:image');
+          const fileUrl = getFileUrl(msg.fileData);
+          const isImage = msg.fileData?.startsWith('data:image') || /\.(png|jpe?g|gif|webp|svg)$/i.test(msg.fileName || msg.fileData || '');
+          const isAudio = msg.fileData?.startsWith('data:audio') || /\.(webm|mp3|ogg|wav|m4a)$/i.test(msg.fileName || msg.fileData || '');
           const isVoiceOnly = isAudio && (!msg.text || msg.text === 'Файл');
 
           return (
@@ -250,9 +291,9 @@ export default function Chat({ currentUser, currentUserAvatar, activeRoom, activ
                       {msg.fileData && (
                         <div style={{ marginTop: msg.text !== 'Файл' ? 8 : 0 }}>
                           {isImage ? (
-                             <img src={msg.fileData} alt={msg.fileName} onClick={() => setFullscreenMedia(msg.fileData)} style={{ maxWidth: '100%', borderRadius: 8, maxHeight: '250px', objectFit: 'cover', cursor: 'pointer' }} /> 
+                             <img src={fileUrl} alt={msg.fileName} onClick={() => setFullscreenMedia(fileUrl)} style={{ maxWidth: '100%', borderRadius: 8, maxHeight: '250px', objectFit: 'cover', cursor: 'pointer' }} /> 
                           ) : (
-                             <a href={msg.fileData} download={msg.fileName} style={{ display: 'inline-block', padding: '8px 12px', background: 'var(--bg-input)', borderRadius: 8, color: 'var(--text-main)', textDecoration: 'none', fontSize: '12px', border: '1px solid var(--border)' }}>📎 {msg.fileName}</a>
+                             <a href={fileUrl} target="_blank" rel="noopener noreferrer" download={msg.fileName} style={{ display: 'inline-block', padding: '8px 12px', background: 'var(--bg-input)', borderRadius: 8, color: 'var(--text-main)', textDecoration: 'none', fontSize: '12px', border: '1px solid var(--border)' }}>📎 {msg.fileName}</a>
                           )}
                         </div>
                       )}
@@ -265,7 +306,7 @@ export default function Chat({ currentUser, currentUserAvatar, activeRoom, activ
                   )}
 
                   {isVoiceOnly && (
-                    <CustomAudioPlayer src={msg.fileData} initialDuration={msg.duration} isSelf={isSelf} timeStr={formatTime(safeTimestamp)} />
+                    <CustomAudioPlayer src={fileUrl} initialDuration={msg.duration} isSelf={isSelf} timeStr={formatTime(safeTimestamp)} />
                   )}
 
                 </div>
@@ -289,6 +330,7 @@ export default function Chat({ currentUser, currentUserAvatar, activeRoom, activ
           <button onClick={() => { setReplyTo(null); setEditMsg(null); setInputValue(''); }} style={{ background: 'transparent', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', fontSize: '16px' }}>✕</button>
         </div>
       )}
+
       <div style={{ display: 'flex', alignItems: 'center', gap: '12px', background: 'var(--bg-input)', padding: '8px 16px', borderRadius: '12px', border: '1px solid var(--border)', position: 'relative' }}>  
           {isRecording ? (
             <div style={{ flex: 1, display: 'flex', alignItems: 'center', gap: '12px', color: 'var(--danger)', fontWeight: 500, fontSize: '14px' }}>
@@ -319,13 +361,14 @@ export default function Chat({ currentUser, currentUserAvatar, activeRoom, activ
               <svg onClick={startRecording} style={{ cursor: 'pointer', transition: 'color 0.2s', color: 'var(--text-muted)' }} width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>
             )}
           </div> 
-         </div> 
+      </div> 
+
       {fullscreenMedia && (
         <div style={{ position: 'fixed', top: 0, left: 0, width: '100vw', height: '100vh', background: 'rgba(0,0,0,0.9)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 120000, backdropFilter: 'blur(10px)' }} onClick={() => setFullscreenMedia(null)}>
           <div style={{ position: 'absolute', top: 20, right: 30, color: 'white', fontSize: 30, cursor: 'pointer' }}>✕</div>
           <img src={fullscreenMedia} alt="Fullscreen" style={{ maxHeight: '90vh', maxWidth: '90vw', borderRadius: 8, boxShadow: '0 10px 40px rgba(0,0,0,0.8)' }} onClick={e => e.stopPropagation()} />
         </div>
-  )}
+      )}
 
       {contextMenu && (
         <div style={{ position: 'fixed', top: contextMenu.y, left: contextMenu.x, background: '#10151c', border: '1px solid rgba(255,255,255,0.08)', borderRadius: '12px', width: '250px', zIndex: 200000, padding: '6px', display: 'flex', flexDirection: 'column', boxShadow: '0 10px 40px rgba(0,0,0,0.8)' }} onClick={(e) => e.stopPropagation()}>
@@ -346,7 +389,7 @@ export default function Chat({ currentUser, currentUserAvatar, activeRoom, activ
               <label style={{ display: 'flex', alignItems: 'center', gap: '10px', fontSize: '13px', cursor: 'pointer', marginBottom: '24px' }}><input type="checkbox" checked={deleteForAll} onChange={(e) => setDeleteForAll(e.target.checked)} style={{ accentColor: 'var(--accent)' }} /> Удалить для всех участников</label>
             ) : <div style={{ fontSize: '13px', color: 'var(--text-muted)', marginBottom: '24px', textAlign: 'center' }}>Будет удалено только для вас.</div>}
             <div style={{ display: 'flex', gap: '10px' }}><button onClick={() => setDeleteModal(null)} style={{ flex: 1, padding: '10px', background: 'transparent', border: '1px solid var(--border)', color: 'var(--text-muted)', borderRadius: '8px' }}>Отмена</button><button onClick={executeDelete} style={{ flex: 1, padding: '10px', background: 'rgba(255, 75, 75, 0.2)', border: '1px solid var(--danger)', color: 'var(--danger)', borderRadius: '8px', fontWeight: 600 }}>Удалить</button></div>
-        </div>
+          </div>
         </div>
       )}
     </div>
